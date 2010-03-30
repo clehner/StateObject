@@ -24,11 +24,11 @@ var stuff = (function () {
 
 
 /**
- * A state object
- * @constructor
+ * A state object
+ * @constructor
  * @param {string=} id 
  * @param {StateManager=} manager
- */
+ */
 function StateObject(id, manager) {
 	this._state = {};
 	if (id != null) {
@@ -52,48 +52,36 @@ StateObject.prototype = {
 	
 	_decReferences: function decReferences() {
 		if (!--this._numReferences) {
-			// Dispose by deleting every property
+			// Dispose of this object by deleting every property
 			for (var key in this._state) {
 				this.set(key, null);
 			}
 		}
 	},
 	
+	// receive an update from the manager
 	_receiveValue: function receiveValue(key /*:string*/, value /*:string|StateObject|null*/) {
-		var delta = {};
-		delta[key] = value;
-		this._receiveDelta(delta);
-	},
-	
-	// receive a delta from the manager
-	_receiveDelta: function receiveDelta(delta /*:object*/) {
 		var state = this._state;
-		for (var key in delta) {
-			var value = delta[key];
-			if (value != state[key]) {
-				if (value == null) {
-					delete state[key];
-				} else {
-					state[key] = value;
-				}
-				// execute handlers for this key
-				if (key in this._keyHandlers) {
-					this._keyHandlers[key].call(this._keyHandlersContext, value);
-				}
-				if (this._kvHandler) {
-					this._kvHandler.call(this._kvHandlerContext, key, value);
-				}
+		if (value != state[key]) {
+			if (value == null) {
+				delete state[key];
+			} else {
+				state[key] = value;
+			}
+			// execute handlers for this key
+			if (key in this._keyHandlers) {
+				this._keyHandlers[key].call(this._keyHandlersContext, value);
+			}
+			if (this._kvHandler) {
+				this._kvHandler.call(this._kvHandlerContext, key, value);
 			}
 		}
-		/*if (this._deltaHandler) {
-			this._deltaHandler.call(this._deltaHandlerContext, delta);
-		}*/
 	},
 	set: function set(key /*:string*/, value /*:string|StateObject|null*/) {
-		var manager = this._manager;
-		var buffer = manager && !manager.buffering && manager.startBuffer();
 		var oldValue = this._state[key];
 		if (oldValue != value) {
+			var manager = this._manager;
+			var buffer = manager && !manager.buffering && manager.startBuffer();
 			// do some basic garbage collection
 			if (value instanceof StateObject) {
 				value._numReferences++;
@@ -106,9 +94,9 @@ StateObject.prototype = {
 			if (manager) {
 				manager._setValue(this._id, key, value);
 			}
-		}
-		if (buffer) {
-			manager.endBuffer();
+			if (buffer) {
+				manager.endBuffer();
+			}
 		}
 	},
 	setKeyHandlers: function setKeyHandlers(handlers /*:object*/, context /*:object*/) {
@@ -127,11 +115,6 @@ StateObject.prototype = {
 			handler.call(context, key, this._state[key]);
 		}
 	},
-	/*setDeltaHandler: function setDeltaHandler(handler / *:function* /, context / *:object* /) {
-		this._deltaHandler = handler;
-		this._deltaHandlerContext = context;
-		handler.call(context, this._state);
-	},*/
 	// Make this object point to a different state object
 	/*attach: function attach(stateObject / *:StateObject* /) {
 		var delta = stateObject._state;
@@ -147,10 +130,10 @@ StateObject.prototype = {
 };
 
 /**
- * Manages state objects. Also is a state object.
- * @constructor
+ * Manages state objects. Also is a state object.
+ * @constructor
  * @extends StateObject
- */
+ */
 function StateManager() {
 	this._objects = {};
 	this._flatState = {};
@@ -173,22 +156,14 @@ StateManager.prototype = (function () {
 			// nested buffering = no effect
 			return false;
 		}
-		
 		this.buffering = true;
-		var buffer = this._buffer = {};
-		function _setFlatValue(key, value) {
-			buffer[key] = value;
-		}
-		_setFlatValue.original = this._setFlatValue;
-		this._setFlatValue = _setFlatValue;
+		this._buffer = {};
 		return true;
 	};
 	
 	this.endBuffer = function () {
 		if (this.buffering) {
 			this.buffering = false;
-			// restore setFlatValue function
-			this._setFlatValue = this._setFlatValue.original;
 			// submit the buffered delta
 			this._setFlatDelta(this._buffer);
 			// get rid of buffer
@@ -225,8 +200,8 @@ StateManager.prototype = (function () {
 		var key2 = objectId + KEY_DELIMITER + key;
 		var value2;
 		if (value instanceof StateObject) {
+			// claim unmanaged state objects
 			if (!value._manager) {
-				// claim unmanaged state objects
 				this.manageObject(value);
 			}
 			if (value._manager == this) {
@@ -239,64 +214,70 @@ StateManager.prototype = (function () {
 			value2 = STRING_MARKER + value;
 		}
 		this._flatState[key2] = value2;
-		this._setFlatValue(key2, value2);
+		if (this.buffering) {
+			this._buffer[key2] = value2;
+		} else {
+			this._setFlatValue(key2, value2);
+		}
 	};
 	
-	// do not override
+	// Subclasses must override either _setFlatValue or _setFlatDelta.
+	
 	this._setFlatValue = function setFlatValue(key /*:string*/, value /*:string*/) {
 		var delta = {};
 		delta[key] = value;
 		this._setFlatDelta(delta);
 	};
 	
-	// override-able
-	this._setFlatDelta = function (delta /*:object*/) {};
+	this._setFlatDelta = function (delta /*:object*/) {
+		for (var key in delta) {
+			this._setFlatValue(key, delta[key]);
+		}
+	};
 	
 	// distributes a flat state update to state objects
-	this._receiveFlatDelta = function receiveFlatDelta(delta /*object*/) {
-		var objectDeltas = {};
-		var key, key2, objectId, value, value2;
-		// todo: decide whether state should be passed by value or by deltas
-		for (key2 in delta) {
-			// extract the object and the key
-			if (key2[0] == KEY_DELIMITER) {
-				// it's a global so it has no id
-				objectId = "";
-				key = key2.substr(1);
-			} else {
-				objectId = key2.substr(0, ID_LENGTH);
-				if (!(objectId in this._objects)) {
-					new StateObject(objectId, this);
-				}
-				key = key2.substr(1 + ID_LENGTH);
-			}
-			(objectDeltas[objectId] || (objectDeltas[objectId] = {}))[key] = delta[key2];
+	this._receiveFlatValue = function receiveFlatValue(key2 /*:string*/, value2 /*:string*/) {
+		// Extract the object and the key.
+		// key2 is in the form (objectId + KEY_DELIMITER + key)
+		var object, key;
+		if (key2[0] == KEY_DELIMITER) {
+			// it's a global value (a property of the manager)
+			object = this;
+			key = key2.substr(1);
+		} else {
+			var i = (key2[ID_LENGTH] == KEY_DELIMITER) ?
+				ID_LENGTH : key2.indexOf(KEY_DELIMITER);
+			var id = key2.substr(0, i);
+			key = key2.substr(1 + i);
+			object = this._objects[id] || new StateObject(id, this);
 		}
-		for (objectId in objectDeltas) {
-			var objectDelta = objectDeltas[objectId];
-			var stateObject = this._objects[objectId];
-			for (key in objectDelta) {
-				value2 = objectDelta[key];
-				// unserialize the values
-				value = value2.substr(1);
-				// The first character of the value determines its type. It can be a string, or a reference to another state object, or a wave participant.
-				switch(value2[0]) {
-				case REFERENCE_MARKER:
-					value = this._objects[value] || new StateObject(value, this);
-					//this._owesObject(stateObject, key, value);
-				break;
-				case PARTICIPANT_MARKER:
-					value = stuff.waveParticipants._objects[value]; //|| waveParticipants._owesObject(stateObject, key, value);
-				/*
-				case JSON_MARKER:
-					value = JSON.parse(value);
-				break;
-				*/
-				}
-				objectDelta[key] = value;
+		
+		// Unserialize the value.
+		// The first character of value2 determines its type.
+		// It can be a string, a reference to another wave state object,
+		// or a wave participant state object.
+		// The rest of value2 is the actual value or reference.
+		// It also could be null if it is being deleted.
+		
+		var value;
+		if (value2 == null) {
+			value = null;
+		} else {
+			value = value2.substr(1);
+			switch(value2[0]) {
+			case REFERENCE_MARKER:
+				value = this._objects[value] || new StateObject(value, this);
+			break;
+			case PARTICIPANT_MARKER:
+				value = stuff.waveParticipants._objects[value]; //|| waveParticipants._owesObject(stateObject, key, value);
+			/*case JSON_MARKER:
+				value = JSON.parse(value);
+			break;*/
 			}
-			stateObject._receiveDelta(objectDelta);
 		}
+		
+		// notify the object of the update
+		object._receiveValue(key, value);
 	};
 	return this;
 }).call(new StateObject());
@@ -315,7 +296,6 @@ stuff.waveState =
 		//this._setFlatValue = state.submitValue;
 		var newState = state.state_;
 		var prevState = this._flatState;
-		var delta = {};
 		var key;
 		
 		if (!isReady) {
@@ -328,18 +308,16 @@ stuff.waveState =
 		// get deleted keys
 		for (key in prevState) {
 			if (!(key in newState)) {
-				delta[key] = null;
+				this._receiveFlatValue(key, null);
 			}
 		}
 		
 		// get changed keys
 		for (key in newState) {
-			if (delta[key] !== newState[key]) {
-				delta[key] = newState[key];
+			if (newState[key] !== prevState[key]) {
+				this._receiveFlatValue(key, newState[key]);
 			}
 		}
-		
-		this._receiveFlatDelta(delta);
 	};
 	return this;
 }).call(new StateManager());
@@ -367,7 +345,6 @@ stuff.waveParticipants =
 	
 	this._onParticipantsChange = function onParticipantsChange() {
 		var newParticipants = wave.participantMap_;
-		var delta2; // delta of the list of participants
 		
 		if (!isReady) {
 			isReady = this.isReady = true;
@@ -379,38 +356,28 @@ stuff.waveParticipants =
 		for (var id in newParticipants) {
 			var newParticipant = newParticipants[id];
 			var oldParticipant = participants[id];
-			var delta; // delta on an individual participant
+			var participantState;
 			var prop;
 			
 			// check if the participant is new
 			if (!oldParticipant) {
 				var participantState = new StateObject(id, this);
-				(delta2 || (delta2 = {}))[id] = participantState;
-				delta = {};
 				// get all its properties
 				for (prop in properties) {
-					delta[properties[prop]] = newParticipant[prop];
+					participantState._receiveValue(properties[prop], newParticipant[prop]);
 				}
-				participantState._receiveDelta(delta);
+				this._receiveValue(id, participantState);
 				continue;
 			}
 			
 			// check for changed properties
+			var participantState = participantStates[id];
 			for (prop in properties) {
 				if (newParticipant[prop] != oldParticipant[prop]) {
 					// property changed
-					(delta || (delta = {}))[properties[prop]] = newParticipant[prop];
+					participantState._receiveValue(properties[prop], newParticipant[prop]);
 				}
 			}
-			if (delta) {
-				// notify the participant's state object that it changed
-				participantStates[id]._receiveDelta(delta);
-				delete delta;
-			}
-		}
-		if (delta2) {
-			// notify the main state object that the participants list changed
-			this._receiveDelta(delta2);
 		}
 		participants = newParticipants;
 	};
