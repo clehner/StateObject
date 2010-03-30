@@ -52,11 +52,17 @@ StateObject.prototype = {
 	
 	_decReferences: function decReferences() {
 		if (!--this._numReferences) {
-			// Dispose of this object by deleting every property
-			for (var key in this._state) {
-				this.set(key, null);
-			}
+			this.destroy();
 		}
+	},
+
+	destroy: function destroy() {
+		// Dispose of this object by deleting every property
+		for (var key in this._state) {
+			this.set(key, null);
+		}
+		// It will have to be re-managed if it is used again.
+		delete this._manager;
 	},
 	
 	// receive an update from the manager
@@ -82,14 +88,14 @@ StateObject.prototype = {
 		if (oldValue != value) {
 			var manager = this._manager;
 			var buffer = manager && !manager.buffering && manager.startBuffer();
-			// do some basic garbage collection
+			// reference counting, for garbage collection
 			if (value instanceof StateObject) {
 				value._numReferences++;
 			}
 			if (oldValue instanceof StateObject) {
 				oldValue._decReferences();
 			}
-			// render the change locally (even though it is buffered)
+			// render the change locally (even if it is buffered)
 			this._receiveValue(key, value);
 			if (manager) {
 				manager._setValue(this._id, key, value);
@@ -151,7 +157,7 @@ StateManager.prototype = (function () {
 	var STRING_MARKER = " ";
 	
 	// returns true if a buffer was created. returns false if there was already a buffer in place.
-	this.startBuffer = function () {
+	this.startBuffer = function startBuffer() {
 		if (this.buffering) {
 			// nested buffering = no effect
 			return false;
@@ -161,7 +167,7 @@ StateManager.prototype = (function () {
 		return true;
 	};
 	
-	this.endBuffer = function () {
+	this.endBuffer = function endBuffer() {
 		if (this.buffering) {
 			this.buffering = false;
 			// submit the buffered delta
@@ -190,6 +196,7 @@ StateManager.prototype = (function () {
 		}
 		object._manager = this;
 		this._objects[id] = object;
+		// add children
 		var state = object._state;
 		for (var key in state) {
 			this._setValue(id, key, state[key]);
@@ -237,6 +244,8 @@ StateManager.prototype = (function () {
 	
 	// distributes a flat state update to state objects
 	this._receiveFlatValue = function receiveFlatValue(key2 /*:string*/, value2 /*:string*/) {
+		this._flatState[key2] = value2;
+		
 		// Extract the object and the key.
 		// key2 is in the form (objectId + KEY_DELIMITER + key)
 		var object, key;
