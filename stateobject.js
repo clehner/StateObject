@@ -1,9 +1,3 @@
-/*
-My latest attempt at a state library for wave gadgets!
-*/
-
-/*jslint forin: true */
-
 var stuff = (function () {
 	var loaded = false;
 	return {
@@ -13,7 +7,7 @@ var stuff = (function () {
 		setLoadCallback: function addLoadCallback(fn, context) {
 			stuff.onLoad = function onLoad() {
 				loaded = true;
-				fn.call(context, stuff.waveState, stuff.waveParticipants); // todo: mode
+				fn.call(context, stuff.waveState, stuff.waveParticipants); // todo: mode?
 			};
 			if (loaded) {
 				stuff.onLoad();
@@ -24,36 +18,44 @@ var stuff = (function () {
 
 
 /**
- * A state object
+ * A state object is a key-value map of strings to strings or other state objects.
+ * It receives updates from a StateSource object.
+ * It fires callbacks when its properties are updated.
+ * 
  * @constructor
- * @param {string=} id 
- * @param {StateManager=} manager
  */
-function StateObject(id, manager) {
+function StateObject() {
 	this._state = {};
-	if (id != null) {
-		this._id = id;
-		this._manager = manager;
-		manager.manageObject(this);
-	}
 }
 StateObject.prototype = {
 	constructor: StateObject,
-	_id: "",
+	id: "",
 	_state /*:object*/: null,
 	_keyHandlers /*:object*/: {},
 	_keyHandlersContext /*:object*/: null,
 	_kvHandler /*:function*/: null,
 	_kvHandlerContext /*:object*/: null,
-	//_deltaHandler /*:function*/: null,
-	//_deltaHandlerContext /*:object*/: null,
-	_manager /*:StateManager*/: null,
+	_source /*:StateSource*/: null,
 	_numReferences: 0,
 	
 	_decReferences: function decReferences() {
 		if (!--this._numReferences) {
-			this.destroy();
+			if (this._source && this._source.buffering) {
+				// destroy it when buffering is over
+				this._source._bufferGC(this);
+			} else {
+				this.destroy();
+			}
 		}
+	},
+	
+	// Prevent it from being garbage collected.
+	holdReference: function holdReference() {
+		this._numReferences++;
+		var self = this;
+		return function () {
+			self._decReferences();
+		};
 	},
 
 	destroy: function destroy() {
@@ -62,48 +64,57 @@ StateObject.prototype = {
 			this.set(key, null);
 		}
 		// It will have to be re-managed if it is used again.
-		delete this._manager;
+		delete this._source;
 	},
 	
-	// receive an update from the manager
+	// receive an update from the source
 	_receiveValue: function receiveValue(key /*:string*/, value /*:string|StateObject|null*/) {
 		var state = this._state;
-		if (value != state[key]) {
-			if (value == null) {
-				delete state[key];
-			} else {
-				state[key] = value;
-			}
-			// execute handlers for this key
-			if (key in this._keyHandlers) {
-				this._keyHandlers[key].call(this._keyHandlersContext, value);
-			}
-			if (this._kvHandler) {
-				this._kvHandler.call(this._kvHandlerContext, key, value);
-			}
+		var prevValue = state[key];
+		if (value == prevValue) {
+			// just for debugging
+			//throw new Error("Received a false update!");
+			return;
+		}
+		if (value == null) {
+			delete state[key];
+		} else {
+			state[key] = value;
+		}
+		// execute handlers for this key
+		if (key in this._keyHandlers) {
+			this._keyHandlers[key].call(this._keyHandlersContext, value, prevValue);
+		}
+		if (this._kvHandler) {
+			this._kvHandler.call(this._kvHandlerContext, key, value, prevValue);
 		}
 	},
 	set: function set(key /*:string*/, value /*:string|StateObject|null*/) {
-		var oldValue = this._state[key];
-		if (oldValue != value) {
-			var manager = this._manager;
-			var buffer = manager && !manager.buffering && manager.startBuffer();
+		var prevValue = this._state[key];
+		if (prevValue != value) {
+			var source = this._source;
+			var buffer = source && !source.buffering && source.startBuffer();
 			// reference counting, for garbage collection
 			if (value instanceof StateObject) {
 				value._numReferences++;
 			}
-			if (oldValue instanceof StateObject) {
-				oldValue._decReferences();
+			if (prevValue instanceof StateObject) {
+				prevValue._decReferences();
 			}
-			// render the change locally (even if it is buffered)
+			// render the change locally first.
 			this._receiveValue(key, value);
-			if (manager) {
-				manager._setValue(this._id, key, value);
+			// now send out the change
+			if (source) {
+				source._setValue(this.id, key, value);
 			}
 			if (buffer) {
-				manager.endBuffer();
+				source.endBuffer();
 			}
 		}
+	},
+	// Using get() should be avoided when possible, in favor of using the callbacks.
+	get: function get(key /*:string*/) {
+		return this._state[key];
 	},
 	setKeyHandlers: function setKeyHandlers(handlers /*:object*/, context /*:object*/) {
 		this._keyHandlers = handlers;
@@ -120,7 +131,7 @@ StateObject.prototype = {
 		for (var key in this._state) {
 			handler.call(context, key, this._state[key]);
 		}
-	},
+	}
 	// Make this object point to a different state object
 	/*attach: function attach(stateObject / *:StateObject* /) {
 		var delta = stateObject._state;
@@ -129,30 +140,35 @@ StateObject.prototype = {
 				delta[key] = null;
 			}
 		}
-		this._id = stateObject._id;
-		this._manager = stateObject._manager;
+		this.id = stateObject.id;
+		this._source = stateObject._source;
 		this._receiveDelta(delta);
 	}*/
 };
 
 /**
- * Manages state objects. Also is a state object.
+ * A state source connects state objects to something external.
+ * Usually that is the Wave Gadgets API, but it could be other things,
+ * like DOM Storage.
+ * 
  * @constructor
  * @extends StateObject
  */
-function StateManager() {
-	this._objects = {};
+function StateSource() {
+	this._objects = {"": this};
+	this._source = this;
 	this._flatState = {};
-	StateObject.call(this, "", this);
+	this._gcBuffer = []; // state objects to check if need gc when done buffering
+	StateObject.call(this);
 }
-StateManager.prototype = (function () {
-	this.constructor = StateManager;
+StateSource.prototype = (function () {
+	this.constructor = StateSource;
 	this.buffering = false;
 	this._buffer = null;
 	
 	var KEY_DELIMITER = ".";
 	var ID_LENGTH = 5; // 61^5 = 844596301 permutations
-	var REFERENCE_MARKER = "&";
+	var REFERENCE_MARKER = "#";
 	var PARTICIPANT_MARKER = "p";
 	var STRING_MARKER = " ";
 	
@@ -169,12 +185,23 @@ StateManager.prototype = (function () {
 	
 	this.endBuffer = function endBuffer() {
 		if (this.buffering) {
+			for (var i = 0; i < this._gcBuffer.length; i++) {
+				var object = this._gcBuffer[i];
+				if (object._numReferences == 0) {
+					object.destroy();
+				}
+			}
+			this._gcBuffer.length = 0;
 			this.buffering = false;
 			// submit the buffered delta
 			this._setFlatDelta(this._buffer);
 			// get rid of buffer
 			delete this._buffer;
 		}
+	};
+	
+	this._bufferGC = function bufferGC(object /*:StateObject*/) {
+		this._gcBuffer.push(object);
 	};
 	
 	// Random strings are used for ids, to minimize collisions.
@@ -189,34 +216,35 @@ StateManager.prototype = (function () {
 	}
 	
 	this.manageObject = function manageObject(object /*:StateObject*/) {
-		var id = object._id;
+		var id = object.id;
 		if (!id && this != object) {
-			// The manager must have an empty id.
-			id = object._id = randomString(ID_LENGTH);
+			// The source must have an empty id.
+			id = object.id = randomString(ID_LENGTH);
 		}
-		object._manager = this;
+		object._source = this;
 		this._objects[id] = object;
 		// add children
 		var state = object._state;
 		for (var key in state) {
 			this._setValue(id, key, state[key]);
 		}
-	}
+	};
 	
 	this._setValue = function setValue(objectId /*:string*/, key /*:string*/, value /*:string|null|StateObject*/) {
 		var key2 = objectId + KEY_DELIMITER + key;
 		var value2;
 		if (value instanceof StateObject) {
 			// claim unmanaged state objects
-			if (!value._manager) {
+			if (!value._source) {
 				this.manageObject(value);
 			}
-			if (value._manager == this) {
+			var marker;
+			if (value._source == this) {
 				marker = REFERENCE_MARKER;
-			} else if (value._manager == stuff.waveParticipants) {
+			} else if (value._source == stuff.waveParticipants) {
 				marker = PARTICIPANT_MARKER;
 			}
-			value2 = marker + value._id;
+			value2 = marker + value.id;
 		} else if (value != null) {
 			value2 = STRING_MARKER + value;
 		}
@@ -228,7 +256,8 @@ StateManager.prototype = (function () {
 		}
 	};
 	
-	// Subclasses must override either _setFlatValue or _setFlatDelta.
+	// Subclasses must override either _setFlatValue or _setFlatDelta,
+	// because they call eachother.
 	
 	this._setFlatValue = function setFlatValue(key /*:string*/, value /*:string*/) {
 		var delta = {};
@@ -242,15 +271,24 @@ StateManager.prototype = (function () {
 		}
 	};
 	
-	// distributes a flat state update to state objects
+	this._getObject = function getObject(id) {
+		var object = this._objects[id];
+		if (!object) {
+			object = new StateObject();
+			object.id = id;
+			this._objects[id] = object;
+			object._source = this;
+		}
+		return object;
+	};
+	
+	// distribute a flat state update to state objects
 	this._receiveFlatValue = function receiveFlatValue(key2 /*:string*/, value2 /*:string*/) {
-		this._flatState[key2] = value2;
-		
-		// Extract the object and the key.
+		// Extract the object and the key from key2.
 		// key2 is in the form (objectId + KEY_DELIMITER + key)
 		var object, key;
 		if (key2[0] == KEY_DELIMITER) {
-			// it's a global value (a property of the manager)
+			// it's a global value (a property of the source)
 			object = this;
 			key = key2.substr(1);
 		} else {
@@ -258,11 +296,11 @@ StateManager.prototype = (function () {
 				ID_LENGTH : key2.indexOf(KEY_DELIMITER);
 			var id = key2.substr(0, i);
 			key = key2.substr(1 + i);
-			object = this._objects[id] || new StateObject(id, this);
+			object = this._objects[id] || this._getObject(id);
 		}
 		
-		// Unserialize the value.
-		// The first character of value2 determines its type.
+		// Unserialize the value from value2.
+		// The first character of value2 determines the type.
 		// It can be a string, a reference to another wave state object,
 		// or a wave participant state object.
 		// The rest of value2 is the actual value or reference.
@@ -274,8 +312,10 @@ StateManager.prototype = (function () {
 		} else {
 			value = value2.substr(1);
 			switch(value2[0]) {
+			case " ":
+			break;
 			case REFERENCE_MARKER:
-				value = this._objects[value] || new StateObject(value, this);
+				value = this._objects[value] || this._getObject(value);
 			break;
 			case PARTICIPANT_MARKER:
 				value = stuff.waveParticipants._objects[value]; //|| waveParticipants._owesObject(stateObject, key, value);
@@ -287,14 +327,15 @@ StateManager.prototype = (function () {
 		
 		// notify the object of the update
 		object._receiveValue(key, value);
+		this._flatState[key2] = value2;
 	};
 	return this;
 }).call(new StateObject());
 
 stuff.waveState =
 /**
- * A state manager for the wave gadget state.
- * @this {StateManager}
+ * A state source for the wave gadget state.
+ * @this {StateSource}
  */
 (function () {
 	var isReady = this.isReady = false;
@@ -302,7 +343,6 @@ stuff.waveState =
 	this._setFlatDelta = wave.State.prototype.submitDelta;
 
 	this._onStateUpdate = function onStateUpdate(state /*:wave.State*/) {
-		//this._setFlatValue = state.submitValue;
 		var newState = state.state_;
 		var prevState = this._flatState;
 		var key;
@@ -329,12 +369,12 @@ stuff.waveState =
 		}
 	};
 	return this;
-}).call(new StateManager());
+}).call(new StateSource());
 
 stuff.waveParticipants =
 /**
- * A state manager for the wave participants.
- * @this {StateManager}
+ * A state source for the wave participants.
+ * @this {StateSource}
  */
 (function () {
 	var isReady = this.isReady = false;
@@ -370,7 +410,7 @@ stuff.waveParticipants =
 			
 			// check if the participant is new
 			if (!oldParticipant) {
-				var participantState = new StateObject(id, this);
+				participantState = this._getObject(id);
 				// get all its properties
 				for (prop in properties) {
 					participantState._receiveValue(properties[prop], newParticipant[prop]);
@@ -380,7 +420,7 @@ stuff.waveParticipants =
 			}
 			
 			// check for changed properties
-			var participantState = participantStates[id];
+			participantState = participantStates[id];
 			for (prop in properties) {
 				if (newParticipant[prop] != oldParticipant[prop]) {
 					// property changed
@@ -391,7 +431,7 @@ stuff.waveParticipants =
 		participants = newParticipants;
 	};
 	return this;
-}).call(new StateManager());
+}).call(new StateSource());
 
 // Set up Wave callbacks
 window.gadgets && gadgets.util.registerOnLoadHandler(function onLoad() {
@@ -402,5 +442,5 @@ window.gadgets && gadgets.util.registerOnLoadHandler(function onLoad() {
 });
 
 window["StateObject"] = StateObject;
-window["StateManager"] = StateManager;
+window["StateSource"] = StateSource;
 window["stuff"] = stuff;

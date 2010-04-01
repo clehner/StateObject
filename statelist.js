@@ -1,60 +1,57 @@
 /**
- * Elastic array thing
+ * Elastic list thing
  * @constructor
  */
-function StateArray(state /*:StateObject*/) {
+function StateList(state /*:StateObject*/) {
 	this._items = [];
-	this._itemsById = {};
-	this._state = state;
+	this._positions = [];
+	this.state = state;
 	state.setKeyValueHandler(this._onStateChange, this);
 }
-StateArray.prototype = {
+StateList.prototype = {
+	state: null,
 	_items: null,
-	_state: null,
+	_positions: null,
 	_onInsert: null,
 	_onInsertContext: null,
 	_onRemove: null,
 	_onRemoveContext: null,
 	removeItem: function removeItem(object /*:StateObject*/) {
-		var item = this._itemsById[object.id];
-		if (item) {
-			var i = this._items.indexOf(item);
-			this._items.splice(i, 1);
-			this._state.set(item.position, null);
-		} else {
-			throw new TypeError("Can't remove an item not in the array.");
+		// The object to be removed must be in the list.
+		var i = this._items.indexOf(object);
+		if (i != -1) {
+			var pos = this._positions[i];
+			this.state.set(pos, null);
 		}
 	},
 	insertItem: function insertItem(object /*:StateObject*/, nextSibling /*:StateObject*/) {
-		var min, max;
+		var min, max, i;
 		var items = this._items;
-		var nextSibIndex = -1;
+		var positions = this._positions;
+		var numItems;
 		if (nextSibling) {
-			var nextSibItem = this._itemsById[nextSibling.id];
-			if (!nextSibItem) {
-				throw new TypeError("The given sibling is not in the array.");
+			i = items.indexOf(nextSibling);
+			if (i == -1) {
+				// Sibling is not in the list. So we insert it.
+				this.insertItem(nextSibling);
+				//console.log("inserted a sibling.");
+				//throw new TypeError("The given sibling is not in the list.");
 			}
-			max = nextSibItem.position;
-			nextSibIndex = items.indexOf(nextSibItem);
-			var prevSibItem = items[nextSibIndex - 1];
-			min = prevSibItem.position;
-		} else {
-			if (items.length) {
-				var lastItem = items[items.length - 1];
-				min = lastItem.position;
+			max = positions[i]; // position of the next sibling
+			min = positions[i - 1]; // position of previous sibling
+		} else if ((numItems = items.length)) {
+			// get pos of last item
+			min = positions[numItems - 1];
+		}
+		var objectIndex = items.indexOf(object);
+		if (objectIndex != -1) {
+			if (!nextSibling || items.indexOf(nextSibling) == objectIndex + 1) {
+				// Object is already in the list.
+				return;
 			}
 		}
-		var pos = StateArray._stringBetween(min, max);
-		var item = this._itemsById[object.id] = {
-			position: pos,
-			object: object
-		};
-		
-		this._items.splice(nextSibIndex, 
-		this._state.set(pos, object);
-	},
-	_insertItem: function (object /*:StateObject*/, position /*:string*/ {
-	
+		var pos = StateList._stringBetween(min, max);
+		this.state.set(pos, object);
 	},
 	setInsertCallback: function (onInsert /*:function(inserted:StateObject, before:StateObject, id:number)*/, context /*:object*/) {
 		this._onInsert = onInsert;
@@ -62,48 +59,38 @@ StateArray.prototype = {
 		// if items have already been inserted, notify the callback.
 		var n = this._items.length;
 		if (n) for (var i = 0; i < n; i++) {
-			onInsert.call(context, this._items[i].object, null, i);
+			onInsert.call(context, this._items[i], null, i);
 		}
 	},
 	setRemoveCallback: function (onRemove /*:function*/, context /*:object*/) {
 		this._onRemove = onRemove;
 		this._onRemoveContext = context;
 	},
-	_onStateChange: function onStateChange(key, value, prevValue) {
+	_onStateChange: function onStateChange(pos, value, prevValue) {
 		var items = this._items;
-		var itemsById = this._itemsById;
-		var item;
-		if (value instanceof StateObject) {
-			// an item was inserted.
-			//var pos = keyToPosition(key);
-			var newPosition = key;
-			var newItem = itemsById[value.id] = {
-				position: newPosition,
-				object: value,
-				key: key
-			};
-			var i = 0;
-			while ((item = items[i])) {
-				if (item.position > newPosition) {
-					// insert before this item
-					break;
-				}
-				i++;
-			}
-			items.splice(i, 0, newItem);
-			if (this._onInsert) {
-				this._onInsert.call(this._onInsertContext, value,
-					item ? item.object : null, i);
-			}
-		} else if (prevValue instanceof StateObject) {
-			// an item was removed.
-			var id = prevValue.id;
-			item = itemsById[id];
-			var index = items.indexOf(item);
-			delete itemsById[id];
-			items.splice(index, 1);
+		var positions = this._positions;
+		var i;
+		if (prevValue instanceof StateObject) {
+			// An item was removed.
+			i = items.indexOf(prevValue);
+			items.splice(i, 1);
+			positions.splice(i, 1);
 			if (this._onRemove) {
-				this._onRemove.call(this._handlersContext, prevValue, index);
+				this._onRemove.call(this._onRemoveContext, prevValue, i);
+			}
+		}
+		if (value instanceof StateObject) {
+			// An item was inserted.
+			// Find the right index at which to insert it.
+			for (i = 0; positions[i] < pos; i++);
+			// get sibling
+			var sibling = items[i];
+			// insert it and its position
+			items.splice(i, 0, value);
+			positions.splice(i, 0, pos);
+			// notify listeners
+			if (this._onInsert) {
+				this._onInsert.call(this._onInsertContext, value, sibling, i);
 			}
 		}
 	}
@@ -119,7 +106,7 @@ StateArray.prototype = {
  * @param {number=} chance Maximum odds of collision tolerated.
  * @return {string} The string generated, between min and 
  */
-StateArray._stringBetween = function stringBetween(min, max,
+StateList._stringBetween = function stringBetween(min, max,
 	minCharCode, maxCharCode, chance) {
 	maxCharCode = maxCharCode || 127;
 	minCharCode = minCharCode || 0;
@@ -149,19 +136,25 @@ StateArray._stringBetween = function stringBetween(min, max,
 	}
 	var ranges = 1;
 	var low, high, mid, range;
+	var highConstrained = true;
 	// Add characters in range.
 	do {
-		high = i < maxLen ? max.charCodeAt(i) : maxCharCode;
+		high = i < maxLen && highConstrained ? max.charCodeAt(i) : maxCharCode;
 		low = i < minLen ? min.charCodeAt(i) : minCharCode;
 		range = high - low;
 		ranges *= (range + 1);
 		mid = low + ~~(range * Math.random());
 		chars[i++] = mid;
+		if (mid != high) {
+			highConstrained = false;
+		}
+		if (i > 100 || ranges < 0) debugger;
 	} while (mid == low);
 	// Add random characters.
 	range = maxCharCode - minCharCode;
 	while (ranges < chance) {
 		ranges *= range;
+		if (i > 100) debugger;
 		chars[i++] = minCharCode + ~~(range * Math.random());
 	}
 	var str = String.fromCharCode.apply(null, chars);
@@ -172,11 +165,12 @@ StateArray._stringBetween = function stringBetween(min, max,
 /*
 String.prototype.codes = function() { return [].map.call(this, function (str) { return str.charCodeAt(0); }); };
 Array.prototype.codes = function() { return this.map(function (str) { return str.charCodeAt(0); });};
-
-
-window["StateArray"] = StateArray;
-StateArray.prototype["setInsertCallback"] = StateArray.prototype.setInsertCallback;
-StateArray.prototype["setRemoveCallback"] = StateArray.prototype.setRemoveCallback;
-StateArray.prototype["insertItem"] = StateArray.prototype.insertItem;
-StateArray.prototype["removeItem"] = StateArray.prototype.removeItem;
 */
+
+window["StateList"] = StateList;
+(function (a) {
+	a["setInsertCallback"] = a.setInsertCallback;
+	a["setRemoveCallback"] = a.setRemoveCallback;
+	a["insertItem"] = a.insertItem;
+	a["removeItem"] = a.removeItem;
+})(StateList.prototype);
