@@ -21,6 +21,8 @@ StateList.prototype = {
 		var i = this._items.indexOf(object);
 		if (i != -1) {
 			var pos = this._positions[i];
+			this._items.splice(i, 1);
+			this._positions.splice(i, 1);
 			this.state.set(pos, null);
 		}
 	},
@@ -34,14 +36,15 @@ StateList.prototype = {
 			if (i == -1) {
 				// Sibling is not in the list. So we insert it.
 				this.insertItem(nextSibling);
-				//console.log("inserted a sibling.");
+				console.log("inserted a sibling.");
 				//throw new TypeError("The given sibling is not in the list.");
 			}
 			max = positions[i]; // position of the next sibling
 			min = positions[i - 1]; // position of previous sibling
 		} else if ((numItems = items.length)) {
-			// get pos of last item
+			// use pos of last item for min
 			min = positions[numItems - 1];
+			i = numItems;
 		}
 		var objectIndex = items.indexOf(object);
 		if (objectIndex != -1) {
@@ -51,6 +54,8 @@ StateList.prototype = {
 			}
 		}
 		var pos = StateList._stringBetween(min, max);
+		this._items.splice(i, 0, object);
+		this._positions.splice(i, 0, pos);
 		this.state.set(pos, object);
 	},
 	setInsertCallback: function (onInsert /*:function(inserted:StateObject, before:StateObject, id:number)*/, context /*:object*/) {
@@ -70,27 +75,31 @@ StateList.prototype = {
 		var items = this._items;
 		var positions = this._positions;
 		var i;
-		if (prevValue instanceof StateObject) {
+		if (prevValue instanceof StateObject ) {
 			// An item was removed.
 			i = items.indexOf(prevValue);
-			items.splice(i, 1);
-			positions.splice(i, 1);
-			if (this._onRemove) {
-				this._onRemove.call(this._onRemoveContext, prevValue, i);
+			if (i != -1) {
+				items.splice(i, 1);
+				positions.splice(i, 1);
+				if (this._onRemove) {
+					this._onRemove.call(this._onRemoveContext, prevValue, i);
+				}
 			}
 		}
 		if (value instanceof StateObject) {
-			// An item was inserted.
-			// Find the right index at which to insert it.
-			for (i = 0; positions[i] < pos; i++);
-			// get sibling
-			var sibling = items[i];
-			// insert it and its position
-			items.splice(i, 0, value);
-			positions.splice(i, 0, pos);
-			// notify listeners
-			if (this._onInsert) {
-				this._onInsert.call(this._onInsertContext, value, sibling, i);
+			if (items.indexOf(value) == -1) {
+				// An item was inserted.
+				// Find the right index at which to insert it.
+				for (i = 0; positions[i] < pos; i++);
+				// get sibling
+				var sibling = items[i];
+				// insert it and its position
+				items.splice(i, 0, value);
+				positions.splice(i, 0, pos);
+				// notify listeners
+				if (this._onInsert) {
+					this._onInsert.call(this._onInsertContext, value, sibling, i);
+				}
 			}
 		}
 	}
@@ -113,15 +122,13 @@ StateList._stringBetween = function stringBetween(min, max,
 	chance = chance || 15625;
 	if (max) {
 		if (min == max) {
-			if (window.console) {
-				console.log("Strings are equal.");
-			}
+			window.console && console.log("Strings are equal.");
 		}
 		if (min > max) {
-			/*var tmp = min;
+			var tmp = min;
 			min = max;
-			max = tmp;*/
-			throw new Error("Strings out of order.");
+			max = tmp;
+			window.console && console.log("Strings out of order.");
 		}
 	} else {
 		max = "";
@@ -148,24 +155,18 @@ StateList._stringBetween = function stringBetween(min, max,
 		if (mid != high) {
 			highConstrained = false;
 		}
-		if (i > 100 || ranges < 0) debugger;
+		if (i > 500 || ranges < 0) throw new Error("Too much iteration");
 	} while (mid == low);
 	// Add random characters.
 	range = maxCharCode - minCharCode;
 	while (ranges < chance) {
 		ranges *= range;
-		if (i > 100) debugger;
+		if (i > 500) throw new Error("Too much iteration");
 		chars[i++] = minCharCode + ~~(range * Math.random());
 	}
 	var str = String.fromCharCode.apply(null, chars);
-	//if (str >= max || str <= min) debugger;
 	return str;
 };
-
-/*
-String.prototype.codes = function() { return [].map.call(this, function (str) { return str.charCodeAt(0); }); };
-Array.prototype.codes = function() { return this.map(function (str) { return str.charCodeAt(0); });};
-*/
 
 window["StateList"] = StateList;
 (function (a) {

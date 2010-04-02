@@ -40,12 +40,7 @@ StateObject.prototype = {
 	
 	_decReferences: function decReferences() {
 		if (!--this._numReferences) {
-			if (this._source && this._source.buffering) {
-				// destroy it when buffering is over
-				this._source._bufferGC(this);
-			} else {
-				this.destroy();
-			}
+			this.destroy();
 		}
 	},
 	
@@ -68,12 +63,13 @@ StateObject.prototype = {
 	},
 	
 	// receive an update from the source
-	_receiveValue: function receiveValue(key /*:string*/, value /*:string|StateObject|null*/) {
+	_receiveValue: function receiveValue(key /*:string*/, value /*:string|StateObject|null*/, local) {
 		var state = this._state;
 		var prevValue = state[key];
 		if (value == prevValue) {
 			// just for debugging
-			//throw new Error("Received a false update!");
+			console.log("Received a false update!");
+			//debugger;
 			return;
 		}
 		if (value == null) {
@@ -82,18 +78,22 @@ StateObject.prototype = {
 			state[key] = value;
 		}
 		// execute handlers for this key
-		if (key in this._keyHandlers) {
-			this._keyHandlers[key].call(this._keyHandlersContext, value, prevValue);
-		}
-		if (this._kvHandler) {
-			this._kvHandler.call(this._kvHandlerContext, key, value, prevValue);
+		if (!local) {
+			if (key in this._keyHandlers) {
+				this._keyHandlers[key].call(this._keyHandlersContext, value, prevValue);
+			}
+			if (this._kvHandler) {
+				this._kvHandler.call(this._kvHandlerContext, key, value, prevValue);
+			}
 		}
 	},
-	set: function set(key /*:string*/, value /*:string|StateObject|null*/) {
+	set: function set(key /*:string*/, value /*:string|StateObject|null*/, dontRender) {
 		var prevValue = this._state[key];
 		if (prevValue != value) {
 			var source = this._source;
 			var buffer = source && !source.buffering && source.startBuffer();
+			// render the change locally first.
+			this._receiveValue(key, value, !dontRender);
 			// reference counting, for garbage collection
 			if (value instanceof StateObject) {
 				value._numReferences++;
@@ -101,14 +101,12 @@ StateObject.prototype = {
 			if (prevValue instanceof StateObject) {
 				prevValue._decReferences();
 			}
-			// render the change locally first.
-			this._receiveValue(key, value);
-			// now send out the change
+			// now send out the change.
 			if (source) {
 				source._setValue(this.id, key, value);
-			}
-			if (buffer) {
-				source.endBuffer();
+				if (buffer) {
+					source.endBuffer();
+				}
 			}
 		}
 	},
@@ -158,13 +156,13 @@ function StateSource() {
 	this._objects = {"": this};
 	this._source = this;
 	this._flatState = {};
-	this._gcBuffer = []; // state objects to check if need gc when done buffering
 	StateObject.call(this);
 }
 StateSource.prototype = (function () {
 	this.constructor = StateSource;
 	this.buffering = false;
 	this._buffer = null;
+	this._throttle = null; // null for instant, or number (ms)
 	
 	var KEY_DELIMITER = ".";
 	var ID_LENGTH = 5; // 61^5 = 844596301 permutations
@@ -172,39 +170,44 @@ StateSource.prototype = (function () {
 	var PARTICIPANT_MARKER = "p";
 	var STRING_MARKER = " ";
 	
-	// returns true if a buffer was created. returns false if there was already a buffer in place.
+	// returns true if a buffer was created that will need to be ended.
 	this.startBuffer = function startBuffer() {
-		if (this.buffering) {
-			// nested buffering = no effect
-			return false;
+		// nested buffering doesn't do anything.
+		if (!this.buffering) {
+			this.buffering = true;
+			this._buffer = {};
+			if (this._throttle == null) {
+				return true;
+			}
+			var self = this;
+			setTimeout(function () {
+				self.endBuffer();
+			}, this._throttle);
 		}
-		this.buffering = true;
-		this._buffer = {};
-		return true;
+		return false;
 	};
 	
 	this.endBuffer = function endBuffer() {
 		if (this.buffering) {
-			for (var i = 0; i < this._gcBuffer.length; i++) {
-				var object = this._gcBuffer[i];
-				if (object._numReferences == 0) {
-					object.destroy();
-				}
-			}
-			this._gcBuffer.length = 0;
-			this.buffering = false;
 			// submit the buffered delta
 			this._setFlatDelta(this._buffer);
+			this.buffering = false;
 			// get rid of buffer
 			delete this._buffer;
 		}
 	};
 	
-	this._bufferGC = function bufferGC(object /*:StateObject*/) {
-		this._gcBuffer.push(object);
+	/**
+	 * Throttling is a way to automatically combine state updates within a close time period,
+	 * so they go out as one delta. This makes things faster.
+	 * @param {?number} delay In milliseconds, or null to turn off throttling (default).
+	 */
+
+	this.setThrottle = function setThrottle(delay) {
+		this._throttle = delay;
 	};
 	
-	// Random strings are used for ids, to minimize collisions.
+	// Random strings are used for ids to minimize collisions.
 	var chars = "0123456789abcdefghiklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXTZ",
 	numChars = chars.length;
 	function randomString(n /*number*/) {
@@ -356,7 +359,7 @@ stuff.waveState =
 		
 		// get deleted keys
 		for (key in prevState) {
-			if (!(key in newState)) {
+			if (!(key in newState || prevState[key] == null)) {
 				this._receiveFlatValue(key, null);
 			}
 		}
