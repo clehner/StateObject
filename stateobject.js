@@ -287,6 +287,9 @@ StateSource.prototype = (function () {
 	
 	// distribute a flat state update to state objects
 	this._receiveFlatValue = function receiveFlatValue(key2 /*:string*/, value2 /*:string*/) {
+		if (this._flatState[key2] == value2) {
+			return;
+		}
 		// Extract the object and the key from key2.
 		// key2 is in the form (objectId + KEY_DELIMITER + key)
 		var object, key;
@@ -346,7 +349,7 @@ stuff.waveState =
 	var waveState;
 	
 	this._setFlatDelta = function (delta) {
-		waveState.submitDelta(delta);
+		(waveState || wave.getState()).submitDelta(delta);
 	};
 
 	var prevState = {};
