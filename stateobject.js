@@ -343,11 +343,16 @@ stuff.waveState =
 (function () {
 	var isReady = this.isReady = false;
 	
-	this._setFlatDelta = wave.State.prototype.submitDelta;
+	var waveState;
+	
+	this._setFlatDelta = function (delta) {
+		waveState.submitDelta(delta);
+	};
 
 	var prevState = {};
-	this._onStateUpdate = function onStateUpdate(state /*:wave.State*/) {
-		var newState = state.state_;
+	this._onStateUpdate = function onStateUpdate() {
+		waveState = wave.getState();
+		var newState = waveState.state_;
 		var key;
 		
 		if (!isReady) {
