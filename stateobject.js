@@ -345,6 +345,7 @@ stuff.waveState =
 	
 	this._setFlatDelta = wave.State.prototype.submitDelta;
 
+	var prevState = {};
 	this._onStateUpdate = function onStateUpdate(state /*:wave.State*/) {
 		var newState = state.state_;
 		var prevState = this._flatState;
@@ -360,14 +361,17 @@ stuff.waveState =
 		// get deleted keys
 		for (key in prevState) {
 			if (!(key in newState || prevState[key] == null)) {
+				delete prevState[key];
 				this._receiveFlatValue(key, null);
 			}
 		}
 		
 		// get changed keys
 		for (key in newState) {
-			if (newState[key] !== prevState[key]) {
-				this._receiveFlatValue(key, newState[key]);
+			var value = newState[key];
+			if (value !== prevState[key]) {
+				prevState[key] = value;
+				this._receiveFlatValue(key, value);
 			}
 		}
 	};
