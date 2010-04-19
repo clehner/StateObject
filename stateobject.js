@@ -348,7 +348,6 @@ stuff.waveState =
 	var prevState = {};
 	this._onStateUpdate = function onStateUpdate(state /*:wave.State*/) {
 		var newState = state.state_;
-		var prevState = this._flatState;
 		var key;
 		
 		if (!isReady) {
